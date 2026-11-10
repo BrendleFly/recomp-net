@@ -67,6 +67,15 @@ RNetRbSession *rnet_rb_create(const RNetRbConfig *cfg, const RNetRollbackVTable 
     }
     s->cfg = *cfg;
     s->vt = *vt;
+    /* Soggy Pigeon start states: a nonzero start_tick means the host has
+     * (or will) pre-store the baseline snapshot at that tick — the session
+     * opens there instead of at reset. Corr + seal base follow it. */
+    if (s->cfg.start_tick != 0u)
+    {
+        s->corr.load_tick = s->cfg.start_tick;
+        s->corr.slot = -1;
+        s->seal_base_tick = s->cfg.start_tick;
+    }
     if ((s->cfg.seal_max_span == 0u) || (s->cfg.seal_max_span > RNET_RB_SEAL_MAX_SPAN))
     {
         s->cfg.seal_max_span = RNET_RB_SEAL_MAX_SPAN;

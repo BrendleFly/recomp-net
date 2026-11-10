@@ -212,6 +212,10 @@ typedef struct RNetRbConfig
      * (RNetSession: a zero sample). Appended last so a zero-initialised
      * config keeps the old behaviour. */
     uint32_t occupied_mask;
+    /* Soggy Pigeon: nonzero = the session's baseline tick — the host has
+     * pre-stored a snapshot at this tick in its ring and seeds the sim
+     * clock from it (curated start states). 0 = boot from reset (legacy). */
+    uint32_t start_tick;
 } RNetRbConfig;
 
 /* Lifecycle. */
