@@ -7,6 +7,14 @@
 #define RNET_HUB_MIN_PACKET 14 /* magic(4)+type(2)+session(4)+checksum(4) */
 #define RNET_HUB_HEADER_LEN 10
 
+/* Pigeon relay envelope (Soggy Pigeon Protocol/Datagram.cs, frozen v1):
+ * magic 'P', type, 8-byte session tag, role, opaque payload. Relay=6 is
+ * client -> rendezvous, RelayFrom=7 the forwarded return. */
+#define RNET_RELAY_MAGIC 0x50 /* 'P' */
+#define RNET_RELAY_TYPE_OUT 6
+#define RNET_RELAY_TYPE_IN 7
+#define RNET_RELAY_HEADER_LEN 11
+
 void rnet_transport_init(RNetTransport *t)
 {
     if (t == NULL)
@@ -16,6 +24,17 @@ void rnet_transport_init(RNetTransport *t)
     memset(t, 0, sizeof(*t));
     t->sock = RNET_SOCKET_INVALID;
     t->mode = RNET_TRANSPORT_NONE;
+}
+
+void rnet_transport_enable_relay(RNetTransport *t, const rnet_u8 tag[8], rnet_u8 role)
+{
+    if ((t == NULL) || (tag == NULL))
+    {
+        return;
+    }
+    t->relay_mode = 1;
+    memcpy(t->relay_tag, tag, sizeof(t->relay_tag));
+    t->relay_role = role;
 }
 
 void rnet_transport_shutdown(RNetTransport *t)
@@ -36,6 +55,7 @@ void rnet_transport_shutdown(RNetTransport *t)
     t->pending_peer_known = 0;
     t->accept_first_peer = 0;
     t->hub_mode = 0;
+    t->relay_mode = 0;
     memset(t->hub_ice_ctx, 0, sizeof(t->hub_ice_ctx));
     t->hub_rr = 0;
     memset(t->hub_slot_known, 0, sizeof(t->hub_slot_known));
@@ -281,6 +301,24 @@ int rnet_transport_send(RNetTransport *t, const rnet_u8 *buf, size_t len)
         {
             return -1;
         }
+        if (t->relay_mode)
+        {
+            /* Wrap the bare rnet datagram in the pigeon Relay envelope: the
+             * rendezvous forwards the payload untouched to the peer's
+             * registered endpoint (the peer unwraps RelayFrom). */
+            rnet_u8 wrapped[RNET_RELAY_HEADER_LEN + RNET_MAX_PACKET];
+            if (len > RNET_MAX_PACKET)
+            {
+                return -1;
+            }
+            wrapped[0] = RNET_RELAY_MAGIC;
+            wrapped[1] = RNET_RELAY_TYPE_OUT;
+            memcpy(&wrapped[2], t->relay_tag, sizeof(t->relay_tag));
+            wrapped[10] = t->relay_role;
+            memcpy(&wrapped[RNET_RELAY_HEADER_LEN], buf, len);
+            return rnet_os_sendto(t->sock, wrapped,
+                                  (size_t)(RNET_RELAY_HEADER_LEN + len), &t->peer);
+        }
         return rnet_os_sendto(t->sock, buf, len, &t->peer);
     }
     if (t->mode == RNET_TRANSPORT_ICE_HUB)
@@ -358,6 +396,23 @@ static int transport_recv_raw(RNetTransport *t, rnet_u8 *buf, size_t cap,
             }
             if (!t->peer_known || sockaddr_equal(&src, &t->peer))
             {
+                if (t->relay_mode)
+                {
+                    /* Unwrap RelayFrom ('P', 7, tag, role): hand the bare
+                     * rnet datagram up. Anything else that reaches this
+                     * socket (stray punch traffic, wrong session) is not
+                     * for the session parser. */
+                    if (n < RNET_RELAY_HEADER_LEN ||
+                        buf[0] != RNET_RELAY_MAGIC ||
+                        buf[1] != RNET_RELAY_TYPE_IN ||
+                        memcmp(&buf[2], t->relay_tag, sizeof(t->relay_tag)) != 0)
+                    {
+                        continue;
+                    }
+                    memmove(buf, &buf[RNET_RELAY_HEADER_LEN],
+                            (size_t)n - RNET_RELAY_HEADER_LEN);
+                    n -= RNET_RELAY_HEADER_LEN;
+                }
                 *out_src = src;
                 *out_have_src = 1;
                 return n;

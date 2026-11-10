@@ -34,6 +34,12 @@ void rnet_session_destroy(RNetSession *s);
  * selects the peer endpoint. */
 int rnet_session_start_lan(RNetSession *s, const char *bind_hostport, const char *peer_hostport);
 
+/* Route this LAN session through the Soggy Pigeon server relay (2026-11-06):
+ * datagrams ride the pigeon envelope to the rendezvous dialed by start_lan.
+ * tag_hex is the 16-hex-char session tag from the matchmaking server, role
+ * 1 = host / 2 = join. Call right after a successful start_lan. */
+void rnet_session_enable_relay(RNetSession *s, const char *tag_hex, int role);
+
 /*
  * Host-as-relay: bind UDP and fan-out delay-sync datagrams to every learned
  * guest seat. Transport role is independent of sim local_slot (lobby owner

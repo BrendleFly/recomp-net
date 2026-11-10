@@ -36,6 +36,14 @@ struct RNetTransport
      * shared; the per-seat context is hub_ice_ctx[slot] (NULL = no agent). */
     void *hub_ice_ctx[RNET_MAX_SLOTS];
     int hub_rr; /* round-robin recv cursor */
+    /* Soggy Pigeon server relay (2026-11-06): every datagram rides the
+     * pigeon envelope ('P', type, 8-byte session tag, role) to the rendezvous
+     * endpoint, which forwards it to the peer's registered endpoint. Send
+     * wraps LAN datagrams in Relay; receive unwraps RelayFrom and passes the
+     * bare rnet datagram up. Never combined with hub_mode. */
+    int relay_mode;
+    rnet_u8 relay_tag[8];
+    rnet_u8 relay_role;
     /* Test-only link simulator; NULL unless RNET_SIM_LATENCY_MS is set.
      * Probed once on first receive rather than at init, because init runs
      * before the process has finished reading its own configuration. */
@@ -45,6 +53,9 @@ struct RNetTransport
 
 void rnet_transport_init(RNetTransport *t);
 void rnet_transport_shutdown(RNetTransport *t);
+/* Route LAN UDP through the Soggy Pigeon relay: tag is the 8 session-tag
+ * bytes, role 1 = host / 2 = join (the rendezvous' seat names). */
+void rnet_transport_enable_relay(RNetTransport *t, const rnet_u8 tag[8], rnet_u8 role);
 int rnet_transport_start_lan(RNetTransport *t, const char *bind_hostport, const char *peer_hostport);
 /* ICE hub: per-seat agent contexts (non-NULL = seat has an agent), shared
  * send/recv callbacks. Source seat == agent index. */

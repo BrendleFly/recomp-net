@@ -2626,6 +2626,34 @@ int rnet_session_start_lan(RNetSession *s, const char *bind_hostport, const char
     return 0;
 }
 
+void rnet_session_enable_relay(RNetSession *s, const char *tag_hex, int role)
+{
+    rnet_u8 tag[8];
+    int i;
+
+    if ((s == NULL) || (tag_hex == NULL) || (strlen(tag_hex) != 16))
+    {
+        return;
+    }
+    for (i = 0; i < 8; ++i)
+    {
+        char hi = tag_hex[i * 2], lo = tag_hex[i * 2 + 1];
+        int hv = (hi >= '0' && hi <= '9') ? hi - '0'
+               : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+               : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
+        int lv = (lo >= '0' && lo <= '9') ? lo - '0'
+               : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+               : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
+        if ((hv < 0) || (lv < 0))
+        {
+            return;
+        }
+        tag[i] = (rnet_u8)((hv << 4) | lv);
+    }
+    rnet_transport_enable_relay(&s->transport, tag,
+                                (rnet_u8)((role == 1 || role == 2) ? role : 1));
+}
+
 int rnet_session_start_lan_hub(RNetSession *s, const char *bind_hostport)
 {
     if (s == NULL)
