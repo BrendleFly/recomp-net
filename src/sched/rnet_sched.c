@@ -1408,6 +1408,11 @@ static void np_pcap_freeze_exit(void)
 #define RB_AUTO_DELAY_AGREE       2u
 #define RB_AUTO_DELAY_LEAD_MARGIN 2
 #define RB_AUTO_DELAY_COOLDOWN_MS 30000u
+/* Since-freeze gate for LOWERS only (2026-11-11 soak, session-119/120:
+ * 30 s re-armed on every jitter freeze, so after transient congestion
+ * the cushion never recovered - D was a one-way ratchet for whole
+ * matches; the 400 ms sim run ended at the D=16 cap with zero lowers). */
+#define RB_AUTO_DELAY_FREEZE_COOLDOWN_MS 15000u
 /* Delay floors: RB_FORCE_TURN_DELAY_FLOOR / RB_AUTO_DELAY_LOWER_FLOOR
  * defined near top of file (§104/§105). */
 
@@ -1503,12 +1508,20 @@ static void np_auto_delay_tick(uint32_t now)
          * arrived with a tick to spare. Lateness alone undercounts it -- a
          * 70 ms link climbing 3 → 4 → 5 one tick at a time spent ~10 s of
          * a 40 s run waiting on rows. */
-        if (1 - lead_min > bump)
+        if (1 - lead_min > bump) {
             bump = 1 - lead_min;
+            /* 2026-11-11 soak: cap the lead-invent term - an invent storm
+             * is not transit (loopback: one CPU-starved window bought D +4
+             * from lead_min=-5 while the rows were only ~1 ms late).
+             * Raises repeat every eval, so genuinely slow links still
+             * climb to transit. */
+            if (bump > 2)
+                bump = 2;
+        }
         if (bump > 4)
             bump = 4;
         target = d + bump;
-    } else if (miss_per_mille < 1u && lead_min > RB_AUTO_DELAY_LEAD_MARGIN) {
+    } else if (miss_per_mille < 5u && lead_min > RB_AUTO_DELAY_LEAD_MARGIN) {
         /* Keyed on the minimum, not the average: the average hides the
          * jitter that a too-small D turns into invents (§104, session-144
          * shrank 5→4 on a healthy average and fueled invent). */
@@ -1567,8 +1580,10 @@ static void np_auto_delay_tick(uint32_t now)
         (uint32_t)(now - s_last_change_ms) < RB_AUTO_DELAY_COOLDOWN_MS)
         return;
     if (target < d && g_pcap_last_enter_ms != 0u &&
-        (uint32_t)(now - g_pcap_last_enter_ms) < RB_AUTO_DELAY_COOLDOWN_MS)
-        return; /* prediction was needed at current D — don't shrink cushion */
+        (uint32_t)(now - g_pcap_last_enter_ms) < RB_AUTO_DELAY_FREEZE_COOLDOWN_MS)
+        return; /* prediction was recently needed at current D - don't shrink
+                 * the cushion mid-congestion (15 s, was 30: the 30 s gate
+                 * re-armed on every jitter freeze and D never recovered) */
 
     if (rnet_session_request_delay_change(s, (rnet_u8)target)) {
         s_last_change_ms = now ? now : 1u;
