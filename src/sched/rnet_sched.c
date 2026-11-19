@@ -1496,36 +1496,71 @@ static void np_auto_delay_tick(uint32_t now)
     miss_per_mille = (uint32_t)(((uint64_t)miss * 1000u) / ticks);
     /* §105: raise only on waited-out arrival pressure (late_n>0). Invent-only
      * miss storms (session-149 lead_avg≈-2, late_n=1, miss=993‰) must not
-     * ratchet D — raising delay does not stop tip invent. */
+     * ratchet D — raising delay does not stop tip invent.
+     *
+     * 2026-11-19 LAN feel-match (session b0678129, direct 24 ms, owner:
+     * "It did feel laggy"): the old "late_n > 0" gate raised on ANY
+     * lateness, so ordinary sub-tick jitter (late avg 1-5 ms on a 17 ms
+     * tick) ratcheted D 5→16 in 110 s on a perfect link and pinned it at
+     * the cap for the rest of the match (~267 ms input lag). Two changes:
+     *   (a) a raise now needs lateness of at least a third of a tick —
+     *       sub-third-tick lateness is jitter, absorbed by P prediction;
+     *   (b) the lead-invent term no longer inflates a bump from single-tick
+     *       tip invent (lead_min = -1), which is normal on every link; only
+     *       deeper invent (lead_min <= -2) means the cushion is short.
+     * A third change is the settle path below: a link that is over-
+     * provisioned (fat lead, no misses) now steps D DOWN one per eval, so
+     * D recovers from a stale high instead of ratcheting for the whole
+     * match. Genuine transit pressure still climbs (400 ms relay trace
+     * climbs to the cap unchanged — verified in soak-results). */
     if (miss_per_mille > 20u && late_n > 0u) {
         uint32_t late_avg = late_n ? (late_sum / late_n) : 0u;
-        int bump = (int)((late_avg + tick_ms - 1u) / tick_ms);
-        if (bump < 1)
-            bump = 1;
-        if (bump > 2)
-            bump = 2;
-        /* Sized like a lower: enough that the window's worst row would have
-         * arrived with a tick to spare. Lateness alone undercounts it -- a
-         * 70 ms link climbing 3 → 4 → 5 one tick at a time spent ~10 s of
-         * a 40 s run waiting on rows. */
-        if (1 - lead_min > bump) {
-            bump = 1 - lead_min;
-            /* 2026-11-11 soak: cap the lead-invent term - an invent storm
-             * is not transit (loopback: one CPU-starved window bought D +4
-             * from lead_min=-5 while the rows were only ~1 ms late).
-             * Raises repeat every eval, so genuinely slow links still
-             * climb to transit. */
+        int bump;
+        if (late_avg * 3u < tick_ms) {
+            bump = 0;   /* sub-third-tick lateness: jitter, not transit */
+        } else {
+            bump = (int)((late_avg + tick_ms - 1u) / tick_ms);
+            if (bump < 1)
+                bump = 1;
             if (bump > 2)
                 bump = 2;
+            /* Sized like a lower: enough that the window's worst row would
+             * have arrived with a tick to spare. Lateness alone undercounts
+             * it -- a 70 ms link climbing 3 → 4 → 5 one tick at a time
+             * spent ~10 s of a 40 s run waiting on rows. */
+            if (1 - lead_min > bump) {
+                if (lead_min > -2) {
+                    /* single-tick tip invent is normal: keep the lateness
+                     * bump, do not inflate it */
+                    if (bump < 1)
+                        bump = 1;
+                } else {
+                    bump = 1 - lead_min;   /* real invent depth */
+                    if (bump > 2)
+                        bump = 2;
+                }
+            }
+            if (bump > 3)
+                bump = 3;
         }
-        if (bump > 4)
-            bump = 4;
-        target = d + bump;
+        if (bump > 0)
+            target = d + bump;
+        else if (miss_per_mille < 5u && lead_min > RB_AUTO_DELAY_LEAD_MARGIN)
+            target = d - (lead_min - RB_AUTO_DELAY_LEAD_MARGIN);
+        else
+            target = d;
     } else if (miss_per_mille < 5u && lead_min > RB_AUTO_DELAY_LEAD_MARGIN) {
         /* Keyed on the minimum, not the average: the average hides the
          * jitter that a too-small D turns into invents (§104, session-144
          * shrank 5→4 on a healthy average and fueled invent). */
         target = d - (lead_min - RB_AUTO_DELAY_LEAD_MARGIN);
+    } else if (miss_per_mille < 5u && lead_avg_x16 > 16 * (RB_AUTO_DELAY_LEAD_MARGIN + 2)) {
+        /* Settle (2026-11-19): an over-provisioned link (fat lead, no
+         * misses) gives one tick back per eval until the cushion is
+         * reasonable. Without this, a D raised by a transient burst stayed
+         * high for the whole session even after the link proved it needed
+         * less (session b0678129 sat at 16 for ~4.5 min with debt_ms=0). */
+        target = d - 1;
     } else {
         target = d;
     }
